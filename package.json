@@ -1,11 +1,11 @@
 {
-  "name": "webrtc-signaling-server",
+  "name": "musicnet-signaling-server",
   "version": "1.0.0",
-  "description": "Servidor de señalización para WebRTC",
+  "description": "Servidor de señalización para MusicNet",
   "main": "server.js",
-    "scripts": {
-      "start": "node server.js" 
-    },
+  "scripts": {
+    "start": "node server.js"
+  },
   "dependencies": {
     "express": "^4.18.2",
     "socket.io": "^4.7.2"
