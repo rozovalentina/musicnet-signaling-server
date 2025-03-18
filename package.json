@@ -4,8 +4,7 @@
   "description": "Servidor de señalización para WebRTC",
   "main": "server.js",
     "scripts": {
-      "build": "tsc",
-      "start": "node dist/server.js" 
+      "start": "node server.js" 
     },
   "dependencies": {
     "express": "^4.18.2",
