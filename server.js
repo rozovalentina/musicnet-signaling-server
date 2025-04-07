@@ -6,8 +6,10 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: {
-        origin: "*", // Allow connections from any origin
-        methods: ["GET", "POST"]
+        origin: ["http://localhost:8000/musicnet/","https://musicnet.surge.sh/", "*"], // Allow connections from any origin
+        methods: ["GET", "POST"],
+        credentials: true, 
+        allowedHeaders: ["Content-Type"],
     }
 });
 
@@ -23,7 +25,8 @@ io.on('connection', (socket) => {
             rooms[roomCode] = {
                 users: [socket.id],
                 host: socket.id,
-                status: 'waiting'
+                status: 'waiting',
+                scores: {}
             };
             socket.join(roomCode);
             console.log(`Sala ${roomCode} creada por ${socket.id}`);
@@ -33,33 +36,79 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Join a room
-    socket.on('joinRoom', (roomCode) => {
-        if (!rooms[roomCode]) {
-            socket.emit('roomNotFound');
+// Modifica el handler de joinRoom
+socket.on('joinRoom', (roomCode) => {
+    if (!rooms[roomCode]) {
+        console.log(`Room ${roomCode} not found`);
+        socket.emit('roomError', 'Room not found');
+        return;
+    }
+
+    if (rooms[roomCode].users.length >= 2) {
+        console.log(`Room ${roomCode} is full`);
+        socket.emit('roomFull', 'Room is full');
+        return;
+    }
+
+    // Inicializar scores si no existe
+    if (!rooms[roomCode].scores) {
+        rooms[roomCode].scores = {};
+    }
+    
+    // Añadir usuario con score inicial 0
+    rooms[roomCode].users.push(socket.id);
+    rooms[roomCode].scores[socket.id] = 0;
+    
+    socket.join(roomCode);
+    console.log(`User ${socket.id} joined room ${roomCode}`);
+
+    // Notificar al otro jugador
+    socket.to(roomCode).emit('userJoined', socket.id);
+
+    // Cuando hay 2 jugadores, iniciar el juego
+    if (rooms[roomCode].users.length === 2) {
+        rooms[roomCode].status = 'playing';
+        console.log(`Starting game in room ${roomCode}`);
+        
+        // Emitir a ambos jugadores con su rol
+        io.to(roomCode).emit('startGame', {
+            roomCode: roomCode,
+            players: rooms[roomCode].users.map(id => ({
+                id,
+                isHost: id === rooms[roomCode].host
+            }))
+        });
+    }
+});
+
+// Handler mejorado para updateScore
+socket.on('updateScore', (data) => {
+    try {
+        const { roomCode, score } = data;
+        
+        if (!rooms[roomCode] || !rooms[roomCode].users.includes(socket.id)) {
+            console.error(`Invalid updateScore request from ${socket.id}`);
             return;
         }
 
-        if (rooms[roomCode].users.length >= 2) { // Limit of 2 players per room
-            socket.emit('roomFull');
-            return;
+        // Asegurar que scores existe
+        if (!rooms[roomCode].scores) {
+            rooms[roomCode].scores = {};
         }
-        rooms[roomCode].users.push(socket.id);
-        socket.join(roomCode);
-        console.log(`User ${socket.id} joined room ${roomCode}`);
-
-        // Notify other users in the room
-        socket.to(roomCode).emit('userJoined', socket.id);
-
-        // If there are two users in the room, start connection
-        if (rooms[roomCode].users.length === 2) {
-            rooms[roomCode].status='playing';
-            io.to(roomCode).emit('starGame', roomCode);
-            console.log(`Romm ${roomCode} is full, starting game`)
-            // Send initial scores to both players
-            io.to(roomCode).emit('initialScores', rooms[roomCode].scores);
-        }
-    });
+        
+        // Actualizar score
+        rooms[roomCode].scores[socket.id] = score;
+        console.log(`Score updated in ${roomCode} for ${socket.id}: ${score}`);
+        
+        // Notificar al otro jugador
+        socket.to(roomCode).emit('opponentScoreUpdate', {
+            playerId: socket.id,
+            score: score
+        });
+    } catch (error) {
+        console.error('Error in updateScore:', error);
+    }
+});
 
     socket.on('leaveRoom', (roomCode) => {
         if (rooms[roomCode]) {
@@ -75,39 +124,45 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Handle score updates
-    socket.on('updateScore', (data) => {
-        const { roomId, score } = data;
-        
-        if (rooms[roomId] && rooms[roomId].users.includes(socket.id)) {
-            // Update the player's score
-            rooms[roomId].scores[socket.id] = score;
-            
-            // Broadcast the updated score to the other player
-            socket.to(roomId).emit('opponentScoreUpdate', {
-                roomId: roomId,
-                score: score,
-                playerId: socket.id
-            });
-            
-            console.log(`Score updated in room ${roomId} for player ${socket.id}: ${score}`);
-        }
-    });
 
-    // Send SDP offer
-    socket.on('offer', (roomCode, offer) => {
-        socket.to(roomCode).emit('offer', offer);
-    });
+// Handler mejorado para ofertas
+socket.on('offer', (roomCode, offer) => {
+    console.log(`Offer recibido para sala `, roomCode.roomCode, `de ${socket.id}:`, offer);
+    if (!rooms[roomCode.roomCode] || !rooms[roomCode.roomCode].users.includes(socket.id)) {
+        console.error(`Sala inválida o usuario no autorizado en la oferta`);
+        return;
+    }
+    
+    // Transmitir la oferta al otro cliente
+    socket.to(roomCode.roomCode).emit('offer', offer);
+    console.log(`Offer transmitido a otros clientes en`, roomCode);
+});
 
-    // Send SDP answer
-    socket.on('answer', (roomCode, answer) => {
-        socket.to(roomCode).emit('answer', answer);
-    });
+// Handler mejorado para respuestas
+socket.on('answer', (roomCode, answer) => {
+    console.log(`Answer recibido para sala `, roomCode.roomCode, `de ${socket.id}:`, answer);
+    if (!rooms[roomCode.roomCode] || !rooms[roomCode.roomCode].users.includes(socket.id)) {
+        console.error(`Sala inválida o usuario no autorizado en respuesta`);
+        return;
+    }
+    
+    // Transmitir la respuesta al otro cliente
+    socket.to(roomCode.roomCode).emit('answer', answer);
+    console.log(`Answer transmitido a otros clientes en ${roomCode.roomCode}`);
+});
 
-    // Send ICE candidates
-    socket.on('iceCandidate', (roomCode, candidate) => {
-        socket.to(roomCode).emit('iceCandidate', candidate);
-    });
+// Handler para ICE candidates
+socket.on('iceCandidate', (roomCode, candidate) => {
+    console.log(`ICE Candidate recibido para`, roomCode.roomCode, `de ${socket.id}:`, candidate);
+    if (!rooms[roomCode.roomCode] || !rooms[roomCode.roomCode].users.includes(socket.id)) {
+        console.error(`Sala inválida o usuario no autorizado en ice candidate`);
+        return;
+    }
+    
+    socket.to(roomCode).emit('iceCandidate', candidate);
+});
+
+
 
     // Handle disconnection
     socket.on('disconnect', () => {
